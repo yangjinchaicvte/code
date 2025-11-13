@@ -2253,7 +2253,7 @@ static int gamma_table_compare(struct tcon_gamma_table_s *table1,
 {
 	int i = 0, flag = 0;
 
-	for (i = 0; i < 257; i++)
+	for (i = 0; i < 256; i++)
 		if (table1->data[i] != table2->data[i]) {
 			flag = 1;
 			break;
@@ -9687,17 +9687,14 @@ tvchip_pq_setting:
 void amvecm_gamma_init(bool en)
 {
 	unsigned int i, j, k;
-	unsigned short data[257];
-	unsigned short temp;
-	struct gamma_data_s *p_gm;
+	unsigned short data[256];
 
 	if (chip_cls_id == STB_CHIP)
 		return;
 
-	for (i = 0; i < 257; i++) {
+	for (i = 0; i < 256; i++) {
 		data[i] = i << 2;
-		if (data[i] >= (1 << 10))
-			data[i] = (1 << 10) - 1;
+
 		video_gamma_table_r.data[i] = data[i];
 		video_gamma_table_g.data[i] = data[i];
 		video_gamma_table_b.data[i] = data[i];
