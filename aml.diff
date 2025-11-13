@@ -1,0 +1,1268 @@
+From 9df17cc7ecca61fe9a4091e6e3dbae43c77d3dab Mon Sep 17 00:00:00 2001
+From: zhangkaixin <zhangkaixin@cvte.com>
+Date: Fri, 18 Apr 2025 19:06:43 +0800
+Subject: [PATCH] [feature][JIRA#RD_GENERAL-43960][vendor][part 3/3]Add Auto_Gamma function
+
+[what]王牌950S项目_开发Auto_Gamma功能
+[why]客户gamma自动校准需求
+[how]在atcfg中添加gamma数据原始包和md5;合入原厂[JIRA#AMLOGIC_O-5596]修改增加gamma
+table相关功能api
+
+Change-Id: I9a34cd4f27c787417699c38ccfa013911a903f59
+---
+
+diff --git a/amlogic/common/frameworks/core/java/com/droidlogic/app/SystemControlManager.java b/amlogic/common/frameworks/core/java/com/droidlogic/app/SystemControlManager.java
+index 276d1ba..1b0784d 100755
+--- a/amlogic/common/frameworks/core/java/com/droidlogic/app/SystemControlManager.java
++++ b/amlogic/common/frameworks/core/java/com/droidlogic/app/SystemControlManager.java
+@@ -1749,25 +1749,6 @@
+         return -1;
+     }
+ 
+-    //cvte add begin
+-        /**
+-     * @Function: SaveColorTemperatureBySource
+-     * @Description: Save current source color temperature mode
+-     * @Param: color temperature mode refer to enum color_temperature, source refer to enum SourceInput
+-     * @Return: 0 success, -1 fail
+-     */
+-    public int SaveColorTemperatureBySource(SystemControlManager.SourceInput source_input,int mode) {
+-          synchronized (mLock) {
+-            try {
+-                return mProxy.saveColorTemperatureBySource(source_input.toInt(),mode);
+-            } catch (RemoteException e) {
+-                Log.e(TAG, "SaveColorTemperature:" + e);
+-            }
+-        }
+-        return -1;
+-    }
+-    //cvte add end
+-
+     /**
+      * @Function: SetColorTemperatureUserParam
+      * @Description: Set current source color temperature mode for user mode
+@@ -2329,6 +2310,35 @@
+ 
+     }
+ 
++	public boolean FactorySetGammaTable(int[] val, int channel_type, color_temperature gamma_type, int PointNum) {
++		synchronized (mLock) {
++			try {
++				int[] data;
++				if (PointNum > KEY_TYPE_LEN_FIRST) {
++					return false;
++				}
++				data = paddingBuffer(val, PointNum, KEY_TYPE_LEN_FIRST);
++				int res = mProxy.factorySetGammaTable(data, channel_type, gamma_type.toInt(), PointNum);
++				return 0 == res;
++			} catch (Exception e) {
++				Log.e(TAG, "factorySetGammaTable:" + e);
++			}
++		}
++		return true;
++	}
++
++	public int cleanAllGammaData() {
++		  synchronized (mLock) {
++			try {
++				return mProxy.cleanAllGammaData();
++			} catch (RemoteException e) {
++				Log.e(TAG, "cleanAllGammaData:" + e);
++			}
++		}
++		return -1;
++	
++	}
++
+     /**
+      * @Function: SetGammaPowerValue
+      * @Description: Set gamma power value
+diff --git a/amlogic/common/frameworks/services/systemcontrol/PQ/CPQControl.cpp b/amlogic/common/frameworks/services/systemcontrol/PQ/CPQControl.cpp
+index 368b69c..5074b9c 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/PQ/CPQControl.cpp
++++ b/amlogic/common/frameworks/services/systemcontrol/PQ/CPQControl.cpp
+@@ -45,10 +45,6 @@
+ #include <global_CVT_EN_UBOOT_KERNEL_CONSTANT_BACKLIGHT.h>
+ #include <global_CVT_EN_FIX_PCMODE_BACKLIGHT_CHANGE.h>
+ #include <global_CVT_EN_FIX_BL_FLASH_SWITCH_SOURCE.h>
+-#include <global_CVT_EN_LOW_BLUE_LIGHT.h>
+-#include <global_CVT_DEF_LOW_BLUE_LIGHT_RGAIN_OFFSET.h>
+-#include <global_CVT_DEF_LOW_BLUE_LIGHT_GGAIN_OFFSET.h>
+-#include <global_CVT_DEF_LOW_BLUE_LIGHT_BGAIN_OFFSET.h>
+ 
+ #define PROP_DEMURA_AUTO_GEN "ro.vendor.demura.autogen"
+ #define PROP_PGAMMA_AUTO_GEN "ro.vendor.pgamma.autogen"
+@@ -59,10 +55,6 @@
+ static const char SYS_PROP_IN_MEDIA[] = "persist.sys.in_media";
+ #endif
+ 
+-#if CVT_EN_LOW_BLUE_LIGHT
+-static const char SYS_PROP_IN_LOWLIGHTMODE[] = "persist.low_blue_light_mode";
+-#endif
+-
+ #define PI 3.14159265358979
+ CPQControl *CPQControl::mInstance = NULL;
+ CPQControl *CPQControl::GetInstance()
+@@ -1526,7 +1518,6 @@
+         SYS_LOGE("%s we set backlight pq_mode is %d !\n",__FUNCTION__,pq_mode);
+     }
+     #endif
+-
+     if(pq_mode == VPP_PICTURE_MODE_COLORFUL || pq_mode == VPP_PICTURE_MODE_BRIGHT) {
+         #if CVT_EN_ECO_MODE
+         needDynamicBL = true;
+@@ -1708,42 +1699,40 @@
+     }
+     //cvte add end
+ 
+-    unsigned char gamma_r[CRI_DATE_GAMMA_RGB_SIZE] = {0};
+-    unsigned char gamma_g[CRI_DATE_GAMMA_RGB_SIZE] = {0};
+-    unsigned char gamma_b[CRI_DATE_GAMMA_RGB_SIZE] = {0};
++    //use cri data gamma for TV-159185
++    unsigned int gamma_r[CRI_DATE_GAMMA_RGB_SIZE] = {0};
++    unsigned int gamma_g[CRI_DATE_GAMMA_RGB_SIZE] = {0};
++    unsigned int gamma_b[CRI_DATE_GAMMA_RGB_SIZE] = {0};
+ 
+-    switch (color_mode) {
+-        case VPP_COLOR_TEMPERATURE_MODE_COLD:
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 0*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_r);
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 1*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_g);
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 2*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_b);
+-            break;
+-        case VPP_COLOR_TEMPERATURE_MODE_STANDARD:
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 3*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_r);
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 4*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_g);
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 5*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_b);
+-            break;
+-        case VPP_COLOR_TEMPERATURE_MODE_WARM:
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 6*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_r);
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 7*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_g);
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 8*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_b);
+-            break;
+-        case VPP_COLOR_TEMPERATURE_MODE_USER:
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 9*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_r);
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 10*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_g);
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 11*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_b);
+-            break;
+-        default:
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 3*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_r);
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 4*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_g);
+-            mSSMAction->ReadDataFromFile(SSM_RGBOGO_FILE_PATH, (CRI_DATE_GAMMA_OFFSET + 5*CRI_DATE_GAMMA_RGB_SIZE), CRI_DATE_GAMMA_RGB_SIZE, gamma_b);
+-            break;
++    int cri_ret = 0;
++    unsigned int _gamma_type[1];
++
++    //read gamma_type index
++    if (mSSMAction->SSMReadCriDataGamma(CRI_DATE_GAMMA_LEN + CRI_DATE_GAMMA_CHKSUM_LEN, CRI_DATE_GAMMA_TYPE_INDEXNUM_LEN, _gamma_type) == 0) {
++        SYS_LOGD("%s SSMReadCriDataGamma success! _gamma_type[0] = %d\n",__FUNCTION__, _gamma_type[0]);
++    } else {
++        SYS_LOGE("%s SSMReadCriDataGamma failed!\n",__FUNCTION__);
+     }
+-    if ((0 == cri_data_gamma_checksum(gamma_r)) && (0 == cri_data_gamma_checksum(gamma_g)) && (0 == cri_data_gamma_checksum(gamma_b))) {
+-        SYS_LOGD("%s, cri_data_gamma checksum ok!\n", __FUNCTION__);
+-        CriGammaBlend(gamma_r, &pq_gamma_r, target_gamma_r.data);
+-        CriGammaBlend(gamma_g, &pq_gamma_g, target_gamma_g.data);
+-        CriGammaBlend(gamma_b, &pq_gamma_b, target_gamma_b.data);
++
++    //read gamma table from cri data
++    cri_ret |= mSSMAction->SSMReadCriDataGamma(sizeof(int)*CRI_DATE_GAMMA_CHANNEL_INDEXNUM*CRI_DATE_GAMMA_RGB_SIZE*color_mode, sizeof(int)*CRI_DATE_GAMMA_RGB_SIZE, gamma_r);
++    cri_ret |= mSSMAction->SSMReadCriDataGamma((sizeof(int)*CRI_DATE_GAMMA_CHANNEL_INDEXNUM*CRI_DATE_GAMMA_RGB_SIZE*color_mode) + (sizeof(int)*GREEN_CH*CRI_DATE_GAMMA_RGB_SIZE), sizeof(int)*CRI_DATE_GAMMA_RGB_SIZE, gamma_g);
++    cri_ret |= mSSMAction->SSMReadCriDataGamma((sizeof(int)*CRI_DATE_GAMMA_CHANNEL_INDEXNUM*CRI_DATE_GAMMA_RGB_SIZE*color_mode) + (sizeof(int)*BLUE_CH*CRI_DATE_GAMMA_RGB_SIZE), sizeof(int)*CRI_DATE_GAMMA_RGB_SIZE, gamma_b);
++    if (cri_ret < 0) {
++        SYS_LOGE("SSMReadCriDataGamma failed!\n");
++    }
++
++    //debug log
++/*    for (i = 0; i < CRI_DATE_GAMMA_RGB_SIZE; i++) {
++        SYS_LOGD("%s SSMReadCriDataGamma! gamma_r[%d] = %d, gamma_g[%d] = %d, gamma_b[%d] = %d\n",__FUNCTION__, i, gamma_r[i], i, gamma_g[i], i, gamma_b[i]);
++    }*/
++
++    //cri data gamma has value
++    if ((Cpq_CalCriDataGammaChecksum() == Cpq_GetCriDataGammaChecksum())  && (Cpq_CalCriDataGammaChecksum() != 0) && (Cpq_GetCriDataGammaChecksum() != 0)) {
++        SYS_LOGD("%s, CriDataGamma Checksum ok!\n", __FUNCTION__);
++        DBGammaBlend(gamma_r, &pq_gamma_r, target_gamma_r.data);
++        DBGammaBlend(gamma_g, &pq_gamma_g, target_gamma_g.data);
++        DBGammaBlend(gamma_b, &pq_gamma_b, target_gamma_b.data);
+         Cpq_SetGammaTbl_R(target_gamma_r.data);
+         Cpq_SetGammaTbl_G(target_gamma_g.data);
+         Cpq_SetGammaTbl_B(target_gamma_b.data);
+@@ -1778,6 +1767,153 @@
+     return 0;
+ }
+ 
++int CPQControl::FactorySetGammaTable(unsigned int *pData, int channel_type, int gamma_type, int len)
++{
++    if (pData == NULL || len > GAMMA_NUMBER) {
++        SYS_LOGE("%s invalid value len = %d\n",__FUNCTION__, len);
++        return -1;
++    }
++
++    if (channel_type >= MAX_CH) {
++        SYS_LOGE("%s invalid value channel_type = %d\n",__FUNCTION__, channel_type);
++        return -1;
++    }
++
++    int i;
++    GAMMA_TABLE Gamma;
++    memset(&Gamma, 0, sizeof(GAMMA_TABLE));
++    for (i = 0; i < len; ++i) {
++        Gamma.data[i] = pData[i];
++    }
++    for (; i < GAMMA_NUMBER; ++i) {
++        Gamma.data[i] = 1023;
++    }
++
++    //save gamma type index
++    unsigned int _gamma_type[1];
++    _gamma_type[0] = (unsigned int)gamma_type;
++
++    if (mSSMAction->SSMSaveCriDataGamma(CRI_DATE_GAMMA_LEN + CRI_DATE_GAMMA_CHKSUM_LEN, CRI_DATE_GAMMA_TYPE_INDEXNUM_LEN, _gamma_type) == 0) {
++        SYS_LOGD("%s SSMSaveCriDataGamma success! _gamma_type[0] = %d\n",__FUNCTION__, _gamma_type[0]);
++    } else {
++        SYS_LOGE("%s SSMSaveCriDataGamma failed!\n",__FUNCTION__);
++    }
++
++    //save gamma table
++    if (channel_type == RED_CH)
++        mSSMAction->SSMSaveCriDataGamma(sizeof(int)*CRI_DATE_GAMMA_CHANNEL_INDEXNUM*CRI_DATE_GAMMA_RGB_SIZE*_gamma_type[0], sizeof(int)*CRI_DATE_GAMMA_RGB_SIZE, Gamma.data);
++    else if (channel_type == GREEN_CH)
++        mSSMAction->SSMSaveCriDataGamma((sizeof(int)*CRI_DATE_GAMMA_CHANNEL_INDEXNUM*CRI_DATE_GAMMA_RGB_SIZE*_gamma_type[0]) + (sizeof(int)*GREEN_CH*CRI_DATE_GAMMA_RGB_SIZE), sizeof(int)*CRI_DATE_GAMMA_RGB_SIZE, Gamma.data);
++    else if (channel_type == BLUE_CH)
++        mSSMAction->SSMSaveCriDataGamma((sizeof(int)*CRI_DATE_GAMMA_CHANNEL_INDEXNUM*CRI_DATE_GAMMA_RGB_SIZE*_gamma_type[0]) + (sizeof(int)*BLUE_CH*CRI_DATE_GAMMA_RGB_SIZE), sizeof(int)*CRI_DATE_GAMMA_RGB_SIZE, Gamma.data);
++    else
++        return -1;
++
++    //save gamma table checksum
++    if (Cpq_SetCriDataGammaChecksum() == 0) {
++        SYS_LOGD("%s Cpq_SetCriDataGammaChecksum success!\n",__FUNCTION__);
++    } else {
++        SYS_LOGE("%s Cpq_SetCriDataGammaChecksum failed!\n",__FUNCTION__);
++        return -1;
++    }
++
++    // to driver
++/*    if (channel_type == RED_CH)
++        Cpq_SetGammaTbl_R((unsigned short *)Gamma.data);
++    else if (channel_type == GREEN_CH)
++        Cpq_SetGammaTbl_G((unsigned short *)Gamma.data);
++    else if (channel_type == BLUE_CH)
++        Cpq_SetGammaTbl_B((unsigned short *)Gamma.data);
++    else
++        return -1;*/
++
++    vpp_gamma_curve_t GammaLevel = (vpp_gamma_curve_t)GetGammaValue();
++    SetGammaValue(GammaLevel, 1);
++
++    SYS_LOGI("%s success!\n",__FUNCTION__);
++    return 0;
++}
++
++unsigned int CPQControl::Cpq_CalCriDataGammaChecksum(void)
++{
++    unsigned int data_buf[CRI_DATE_GAMMA_CHANNEL_INDEXNUM*CRI_DATE_GAMMA_RGB_SIZE*CRI_DATE_GAMMA_TYPE_INDEXNUM];
++    unsigned int sum = 0;
++    int cnt;
++
++    mSSMAction->SSMReadCriDataGamma(0, CRI_DATE_GAMMA_LEN, data_buf);
++
++    for (cnt = 0; cnt < (CRI_DATE_GAMMA_CHANNEL_INDEXNUM*CRI_DATE_GAMMA_RGB_SIZE*CRI_DATE_GAMMA_TYPE_INDEXNUM); cnt++) {
++        sum += data_buf[cnt];
++    }
++
++    SYS_LOGD("%s, sum = 0x%X.\n", __FUNCTION__, sum);
++
++    return sum;
++}
++
++int CPQControl::Cpq_SetCriDataGammaChecksum(void)
++{
++    int ret = 0;
++    unsigned int checksum[1];
++
++    checksum[0] = Cpq_CalCriDataGammaChecksum();
++
++    SYS_LOGD("%s, checksum = 0x%X.\n", __FUNCTION__, checksum[0]);
++
++    ret |= mSSMAction->SSMSaveCriDataGamma(CRI_DATE_GAMMA_LEN, CRI_DATE_GAMMA_CHKSUM_LEN, checksum);
++
++    return ret;
++}
++
++unsigned int CPQControl::Cpq_GetCriDataGammaChecksum(void)
++{
++    unsigned int checksum[1];
++
++    mSSMAction->SSMReadCriDataGamma(CRI_DATE_GAMMA_LEN, CRI_DATE_GAMMA_CHKSUM_LEN, checksum);
++
++    SYS_LOGD("%s, sum = 0x%X.\n", __FUNCTION__, checksum[0]);
++
++    return checksum[0];
++}
++
++int CPQControl::CleanAllCriDataGammaData(void)
++{
++    unsigned int gamma_data_buf[CRI_DATE_GAMMA_CHANNEL_INDEXNUM*CRI_DATE_GAMMA_RGB_SIZE*CRI_DATE_GAMMA_TYPE_INDEXNUM];
++    unsigned int checksum_buf[1];
++    unsigned int gammatype_buf[1];
++
++    memset(gamma_data_buf, 0, sizeof(gamma_data_buf));
++    memset(checksum_buf, 0, sizeof(checksum_buf));
++    memset(gammatype_buf, 0, sizeof(gammatype_buf));
++
++    if (mSSMAction->SSMSaveCriDataGamma(0, CRI_DATE_GAMMA_LEN, gamma_data_buf) == 0) {
++        SYS_LOGD("%s SSMSaveCriDataGamma clean gammadata success!\n",__FUNCTION__);
++    } else {
++        SYS_LOGE("%s SSMSaveCriDataGamma clean gammadata failed!\n",__FUNCTION__);
++        return -1;
++    }
++
++    if (mSSMAction->SSMSaveCriDataGamma(CRI_DATE_GAMMA_LEN, CRI_DATE_GAMMA_CHKSUM_LEN, checksum_buf) == 0) {
++        SYS_LOGD("%s SSMSaveCriDataGamma clean checksum success!\n",__FUNCTION__);
++    } else {
++        SYS_LOGE("%s SSMSaveCriDataGamma clean checksum failed!\n",__FUNCTION__);
++        return -1;
++    }
++
++    if (mSSMAction->SSMSaveCriDataGamma(CRI_DATE_GAMMA_LEN + CRI_DATE_GAMMA_CHKSUM_LEN, CRI_DATE_GAMMA_TYPE_INDEXNUM_LEN, gammatype_buf) == 0) {
++        SYS_LOGD("%s SSMSaveCriDataGamma clean gammatype success!\n",__FUNCTION__);
++    } else {
++        SYS_LOGE("%s SSMSaveCriDataGamma clean gammatype failed!\n",__FUNCTION__);
++        return -1;
++    }
++
++    vpp_gamma_curve_t GammaLevel = (vpp_gamma_curve_t)GetGammaValue();
++    SetGammaValue(GammaLevel, 1);
++
++    SYS_LOGI("%s success!\n",__FUNCTION__);
++    return 0;
++}
++
+ //for user gamma
+ int CPQControl::CriGammaBlend(unsigned char cri_data_gamma[], pq_tcon_gamma_table_t *blend_gamma, unsigned short target_gamma[])
+ {
+@@ -1804,6 +1940,7 @@
+ 
+     return 0;
+ }
++
+ int CPQControl::cri_data_gamma_checksum(unsigned char data_buf[])
+ {
+     int ret = -1, cnt;
+@@ -1866,8 +2003,6 @@
+     return 0;
+ }
+ 
+-
+-
+ //color temperature
+ int CPQControl::SetColorTemperatureBySource(int source_input, int temp_mode, int is_save)
+ {
+@@ -2007,45 +2142,6 @@
+     return ret;
+ }
+ 
+-int CPQControl::SaveColorTemperatureBySource(int source_input,int temp_mode)
+-{
+-    if(source_input == SOURCE_ADTV)
+-        source_input = SOURCE_TV;
+-
+-    tv_source_input_t source_input_temp = SOURCE_MPEG;
+-    char buf[32] = {0};
+-    SYS_LOGD("%s: source = %d, colortempMode = %d\n", __FUNCTION__, mCurrentSourceInputInfo.source_input, temp_mode);
+-    if ((pqReadSys(VIDEO_AXIS, buf, sizeof(buf)) < 0) || (strlen(buf) == 0)){
+-    } else {
+-        SYS_LOGD("SaveColorTemperatureBySource : %s \n",buf);
+-        if(strstr(buf,"0")){
+-            source_input_temp = (tv_source_input_t) source_input;
+-        }else{
+-            source_input_temp = SOURCE_MPEG;
+-        }
+-    }
+-    SYS_LOGD("%s: source:%d, mode: %d\n", __FUNCTION__, source_input_temp, temp_mode);
+-    int ret = -1;
+-    if (mbCpqCfg_new_picture_mode_enable) {
+-        vpp_pictur_mode_para_t para;
+-        vpp_picture_mode_t pq_mode = (vpp_picture_mode_t)GetPQMode();
+-        if (GetPictureModeData(mCurentPqSource, pq_mode, &para) == 0) {
+-            para.ColorTemperature = temp_mode;
+-            ret = SetPictureModeData(mCurentPqSource, pq_mode, &para);
+-        }
+-    } else {
+-        ret = mSSMAction->SSMSaveColorTemperature(source_input_temp, temp_mode);
+-    }
+-
+-    if (ret < 0) {
+-        SYS_LOGE("%s failed!\n",__FUNCTION__);
+-    } else {
+-        SYS_LOGD("%s success!\n",__FUNCTION__);
+-    }
+-
+-    return ret;
+-}
+-
+ tcon_rgb_ogo_t CPQControl::GetColorTemperatureUserParam(void) {
+     tcon_rgb_ogo_t param;
+     memset(&param, 0, sizeof(tcon_rgb_ogo_t));
+@@ -2269,25 +2365,6 @@
+         mPQdb->PQ_GetColorTemperatureParams((vpp_color_temperature_mode_t) i, source_input_param, &rgbogo);
+         SaveColorTemperatureParams(source_input_param.source_input, (vpp_color_temperature_mode_t) i, rgbogo);
+     }
+-    #if CVT_EN_LOW_BLUE_LIGHT
+-    char syspropbuf[PROPERTY_VALUE_MAX] = {0};
+-    bool needreloadnormalwb = false;
+-    if (property_get(SYS_PROP_IN_LOWLIGHTMODE, syspropbuf, "0") > 0) {
+-        SYS_LOGE("Prop [%s]=%s\n", SYS_PROP_IN_LOWLIGHTMODE, syspropbuf);
+-        if (!strcasecmp(syspropbuf, "true") || !strcmp(syspropbuf, "1"))
+-            needreloadnormalwb = true;
+-    } else {
+-        SYS_LOGE("getprop [%s] fail\n", SYS_PROP_IN_LOWLIGHTMODE);
+-    }
+-    if(needreloadnormalwb){
+-        SYS_LOGE("need reload normal wb data\n");
+-        mPQdb->PQ_GetColorTemperatureParams((vpp_color_temperature_mode_t) 0, source_input_param, &rgbogo);
+-        rgbogo.r_gain = rgbogo.r_gain + CVT_DEF_LOW_BLUE_LIGHT_RGAIN_OFFSET*8;
+-        rgbogo.g_gain = rgbogo.g_gain + CVT_DEF_LOW_BLUE_LIGHT_GGAIN_OFFSET*8;
+-        rgbogo.b_gain = rgbogo.b_gain + CVT_DEF_LOW_BLUE_LIGHT_BGAIN_OFFSET*8;
+-        SaveColorTemperatureParams(source_input_param.source_input, (vpp_color_temperature_mode_t) 0, rgbogo);
+-    }
+-    #endif
+ 
+     Cpq_SetColorTemperatureParamsChecksum(source_input_param.source_input);
+ 
+@@ -3656,8 +3733,6 @@
+     }
+ }
+ 
+-
+-
+ int CPQControl::SetGammaValue(vpp_gamma_curve_t gamma_curve, int is_save)
+ {
+     SYS_LOGD("%s, source: %d, value = %d\n", __FUNCTION__, mSourceInputForSaveParam, gamma_curve);
+@@ -10983,9 +11058,9 @@
+     if (mbCpqCfg_new_picture_mode_enable) {
+         resetPQUiSetting();
+         resetPQTableSetting();
+-        mSSMAction->SSMSaveBackLightVal(1*sizeof(int), 100);
+-        mSSMAction->SSMSaveBackLightVal(2*sizeof(int), 100);
+-        mSSMAction->SSMSaveBackLightVal(3*sizeof(int), 100);
++        mSSMAction->SSMSaveBackLightVal(1*sizeof(int), CVT_DEF_PANEL_BACKLIGHT);
++        mSSMAction->SSMSaveBackLightVal(2*sizeof(int), CVT_DEF_PANEL_BACKLIGHT);
++        mSSMAction->SSMSaveBackLightVal(3*sizeof(int), CVT_DEF_PANEL_BACKLIGHT);
+         return;
+     }
+ 
+@@ -13587,13 +13662,11 @@
+     }
+ 
+     if (pgamma_size != 0) {
+-        if (PANLE_TCONLESS_TYPE0 == pgamma_param_0 || PANLE_TCONLESS_TYPE2 == pgamma_param_0
+-            || PANLE_TCONLESS_TYPE4 == pgamma_param_0) {
++        if (PANLE_TCONLESS_TYPE0 == pgamma_param_0 || PANLE_TCONLESS_TYPE2 == pgamma_param_0) {
+             if (Cpq_tconless_autoPgamma_Type0(pgamma_param_0)) {
+                 SYS_LOGE("%s, do Cpq_tconless_autoPgamma_Type0 failed.\n", __FUNCTION__);
+             }
+-        } else if (PANLE_TCONLESS_TYPE1 == pgamma_param_0 || PANLE_TCONLESS_TYPE5 == pgamma_param_0
+-                   || PANLE_TCONLESS_TYPE6 == pgamma_param_0) { //cvte modify
++        } else if (PANLE_TCONLESS_TYPE1 == pgamma_param_0) {
+             if (Cpq_tconless_autoPgamma_Type1(pgamma_param_0)) {
+                 SYS_LOGE("%s, do Cpq_tconless_autoPgamma_Type1 failed.\n", __FUNCTION__);
+             }
+@@ -13633,10 +13706,7 @@
+                                              0x02,0xb5,0x02,0x6b,0x02,0x49,0x02,0x14,0x01,0xed,0x01,0x98,0x01,0x72,0x01,0x13,
+                                              0x00,0xe3,0x00,0x8f,0x00,0x19,0x00,0x0e,0xff,0x00,0x25,0x28,0xff,0x88,0xd8,0x41,
+                                              0x1a};
+-    unsigned char bin_buf_ST4251B05_2_1[49] = {0x19,0x1e,0x24,0x0a,0x0a,0x0e,0x12,0x06,0x62,0x80,0x37,0x28,0x03,0x86,0x02,0xc0,
+-                                               0x02,0x1a,0x01,0x72,0x01,0x13,0x00,0x8f,0x00,0x19,0x00,0x0e,0x03,0x65,0x02,0x75,
+-                                               0x02,0x50,0x01,0xf5,0x01,0x98,0x00,0xe3,0xff,0x80,0x25,0x28,0xfe,0x88,0xd8,0x41,
+-                                               0x1a};
++
+ 
+     if (PANLE_TCONLESS_TYPE0 == type) {
+         offset = PANLE_PGAMMA_LUT_OFFSET_TYPE0;
+@@ -13650,12 +13720,6 @@
+         slave_addr_buf[0] = PANLE_PGAMMA_LUT_OFFSET_TYPE2 >> 8;
+         slave_addr_buf[1] = PANLE_PGAMMA_LUT_OFFSET_TYPE2 & 0xff;
+         memcpy(bin_buf, bin_buf_ST4251B05_2, sizeof(bin_buf_ST4251B05_2) / sizeof(bin_buf_ST4251B05_2[0]));
+-    } else if (PANLE_TCONLESS_TYPE4 == type) {
+-        offset = PANLE_PGAMMA_LUT_OFFSET_TYPE4;
+-        len = PANLE_PGAMMA_LUT_LEN_TYPE4;
+-        slave_addr_buf[0] = PANLE_PGAMMA_LUT_OFFSET_TYPE4 >> 8;
+-        slave_addr_buf[1] = PANLE_PGAMMA_LUT_OFFSET_TYPE4 & 0xff;
+-        memcpy(bin_buf, bin_buf_ST4251B05_2_1, sizeof(bin_buf_ST4251B05_2_1) / sizeof(bin_buf_ST4251B05_2_1[0]));
+     } else {
+         SYS_LOGE("%s, No corresponding Auto pgamma data type.\n", __FUNCTION__);
+         return -1;
+@@ -13699,9 +13763,9 @@
+         res_buf[j + 1] =  (unsigned char)(gamma_code_res[i] & 0xff);
+     }
+ 
+-    if (PANLE_TCONLESS_TYPE0 == type || PANLE_TCONLESS_TYPE4 == type)
++    if (PANLE_TCONLESS_TYPE0 == type)
+     {
+-        /*The gamma voltage at the screen end does not correspond one-to-one with the PMIC end
++        /*ST3151B07_1 : The gamma voltage at the screen end does not correspond one-to-one with the PMIC end
+          *mapping:
+          *PMIC  --> Panel
+          *GMA1  --> GMA1
+@@ -13764,22 +13828,12 @@
+     float gamma_v[PANEL_AUTO_PGAMMA_BUF_SIZE_MAX] = {0x0};
+     unsigned int gamma_code[PANEL_AUTO_PGAMMA_BUF_SIZE_MAX] = {0x0};
+     unsigned int gamma_code_res[PANEL_AUTO_PGAMMA_BUF_SIZE_MAX] = {0x0};
+-    unsigned int gamma_code_sort[PANEL_AUTO_PGAMMA_BUF_SIZE_MAX] = {0x0}; //cvte add
+     unsigned char buf_res[PANEL_AUTO_PGAMMA_BUF_SIZE_MAX] = {0X0};
+     unsigned char buf_check[PANEL_AUTO_PGAMMA_BUF_SIZE_MAX] = {0X0};
+     unsigned char buf_bin_PT430CT05_1[0x31] = {0x13,0x1e,0x20,0x10,0x10,0x0c,0x12,0x06,0x9e,0x9e,0x37,0x28,0x03,0x83,0x03,0x7f,
+                                                0x02,0xc8,0x02,0x82,0x02,0x5a,0x02,0x2a,0x02,0x24,0x01,0x64,0x01,0x5e,0x01,0x32,
+                                                0x01,0x03,0x00,0xb5,0x00,0x1c,0x00,0x17,0xff,0x00,0x25,0x28,0xff,0x80,0xd8,0x41,
+                                                0x1a};
+-    //cvte add start
+-    unsigned char buf_bin_PT430CT05_1_1[0x31] = {0x11,0x1e,0x25,0x10,0x10,0x0c,0x12,0x06,0x9e,0x9e,0x37,0x28,0x03,0x8a,0x02,0xcb,
+-                                                 0x02,0x2d,0x01,0x5e,0x01,0x32,0x00,0xb5,0x00,0x1c,0x00,0x17,0x03,0x84,0x02,0x85,
+-                                                 0x02,0x5d,0x02,0x28,0x01,0x64,0x01,0x03,0xff,0x80,0x25,0x28,0xff,0x88,0xd8,0x41,
+-                                                 0x1a};
+-    unsigned char buf_bin_PT500CT02_2[0x31] = {0x13,0x1e,0x22,0x10,0x0c,0x0c,0x12,0x06,0x84,0x84,0x36,0x27,0x00,0x16,0x00,0x1b,
+-                                               0x00,0xa3,0x00,0xeb,0x01,0x18,0x01,0x6b,0x01,0x71,0x02,0x16,0x02,0x1b,0x02,0x39,
+-                                               0x02,0x61,0x02,0xa3,0x03,0x3a,0x03,0x3f,0xff,0x20,0x24,0x28,0xfe,0x88,0xd8,0x41,
+-                                               0x1a};
+ 
+     if (PANLE_TCONLESS_TYPE1 == type) {
+         offset = PANLE_PGAMMA_LUT_OFFSET_TYPE1;
+@@ -13787,19 +13841,6 @@
+         slave_addr_buf[0] = PANLE_PGAMMA_LUT_OFFSET_TYPE1 >> 8;
+         slave_addr_buf[1] = PANLE_PGAMMA_LUT_OFFSET_TYPE1 & 0xff;
+         memcpy(buf_res, buf_bin_PT430CT05_1, sizeof(buf_bin_PT430CT05_1) / sizeof(buf_bin_PT430CT05_1[0]));
+-    } else if (PANLE_TCONLESS_TYPE5 == type) {
+-        offset = PANLE_PGAMMA_LUT_OFFSET_TYPE5;
+-        len = PANLE_PGAMMA_LUT_LEN_TYPE5;
+-        slave_addr_buf[0] = PANLE_PGAMMA_LUT_OFFSET_TYPE5 >> 8;
+-        slave_addr_buf[1] = PANLE_PGAMMA_LUT_OFFSET_TYPE5 & 0xff;
+-        memcpy(buf_res, buf_bin_PT430CT05_1_1, sizeof(buf_bin_PT430CT05_1_1) / sizeof(buf_bin_PT430CT05_1_1[0]));
+-    //cvte add end
+-    } else if (PANLE_TCONLESS_TYPE6 == type) {
+-        offset = PANLE_PGAMMA_LUT_OFFSET_TYPE6;
+-        len = PANLE_PGAMMA_LUT_LEN_TYPE6;
+-        slave_addr_buf[0] = PANLE_PGAMMA_LUT_OFFSET_TYPE6 >> 8;
+-        slave_addr_buf[1] = PANLE_PGAMMA_LUT_OFFSET_TYPE6 & 0xff;
+-        memcpy(buf_res, buf_bin_PT500CT02_2, sizeof(buf_bin_PT500CT02_2) / sizeof(buf_bin_PT500CT02_2[0]));
+     } else {
+         SYS_LOGE("%s, No corresponding Auto pgamma data type.\n", __FUNCTION__);
+         return -1;
+@@ -13830,17 +13871,11 @@
+         gamma_code[i] = (unsigned int)(((eep_buf[j] & 0x3) << 8) | eep_buf[j + 1]);
+     }
+     vcom_code = (unsigned int)(((eep_buf[0x1c] & 0x3) << 8) | eep_buf[0x1d]);
+-    if (PANLE_TCONLESS_TYPE6 == type) {
+-        verf_v = 14.92;
+-    } else {
+-        verf_v = (float)((10.0 * eep_buf[0x22]) / 256 + 10);
+-    }
+-
++    verf_v = (float)((10.0 * eep_buf[0x22]) / 256 + 10);
+     vcom_v = (float)(verf_v / 1024 * vcom_code);
+     SYS_LOGE("%s, verf_v = %f vcom_v = %f.\n", __FUNCTION__, verf_v, vcom_v);
+     for (i = 0; i < 14; i++) {
+         gamma_v[i] = (float)(verf_v / 1024 * gamma_code[i]);
+-        SYS_LOGE("%s, gamma_v = %f.\n", __FUNCTION__, gamma_v[i]);
+     }
+     avdd = 13.5 + ((float)(buf_res[0x0] & 0x3f) / 10);
+     vcom_max_v = (float)(avdd / 128 * ((buf_res[0xa] & 0x7f) + 1));
+@@ -13853,87 +13888,6 @@
+         buf_res[j] =  (unsigned char)((gamma_code_res[i] & 0x300) >> 8);
+         buf_res[j + 1] =  (unsigned char)(gamma_code_res[i] & 0xff);
+     }
+-    //cvte add start
+-    if (PANLE_TCONLESS_TYPE5 == type)
+-    {
+-        /*The gamma voltage at the screen end does not correspond one-to-one with the PMIC end
+-         *mapping:
+-         *PMIC  --> Panel
+-         *GMA1  --> GMA1
+-         *GMA2  --> GMA3
+-         *GMA3  --> GMA6
+-         *GMA4  --> GMA9
+-         *GMA5  --> GMA10
+-         *GMA6  --> GMA12
+-         *GMA7  --> GMA13
+-         *GMA8  --> GMA14
+-         *GMA9  --> GMA2
+-         *GMA10 --> GMA4
+-         *GMA11 --> GMA5
+-         *GMA12 --> GMA7
+-         *GMA13 --> GMA8
+-         *GMA14 --> GMA11
+-         */
+-        gamma_code_sort[0] = gamma_code_res[0];
+-        gamma_code_sort[1] = gamma_code_res[2];
+-        gamma_code_sort[2] = gamma_code_res[5];
+-        gamma_code_sort[3] = gamma_code_res[8];
+-        gamma_code_sort[4] = gamma_code_res[9];
+-        gamma_code_sort[5] = gamma_code_res[11];
+-        gamma_code_sort[6] = gamma_code_res[12];
+-        gamma_code_sort[7] = gamma_code_res[13];
+-        gamma_code_sort[8] = gamma_code_res[1];
+-        gamma_code_sort[9] = gamma_code_res[3];
+-        gamma_code_sort[10] = gamma_code_res[4];
+-        gamma_code_sort[11] = gamma_code_res[6];
+-        gamma_code_sort[12] = gamma_code_res[7];
+-        gamma_code_sort[13] = gamma_code_res[10];
+-        for (i = 0, j = 0xc; i < 14; i++, j += 2)
+-        {
+-            buf_res[j] =  (unsigned char)((gamma_code_sort[i] & 0x300) >> 8);
+-            buf_res[j + 1] =  (unsigned char)(gamma_code_sort[i] & 0xff);
+-        }
+-    }else if (PANLE_TCONLESS_TYPE6 == type) {
+-        /*The gamma voltage at the screen end does not correspond one-to-one with the PMIC end
+-         *mapping:
+-         *PMIC  --> Panel
+-         *GMA1  --> GMA14
+-         *GMA2  --> GMA13
+-         *GMA3  --> GMA12
+-         *GMA4  --> GMA11
+-         *GMA5  --> GMA10
+-         *GMA6  --> GMA9
+-         *GMA7  --> GMA8
+-         *GMA8  --> GMA7
+-         *GMA9  --> GMA6
+-         *GMA10 --> GMA5
+-         *GMA11 --> GMA4
+-         *GMA12 --> GMA3
+-         *GMA13 --> GMA2
+-         *GMA14 --> GMA1
+-         */
+-        gamma_code_sort[0] = gamma_code_res[13];
+-        gamma_code_sort[1] = gamma_code_res[12];
+-        gamma_code_sort[2] = gamma_code_res[11];
+-        gamma_code_sort[3] = gamma_code_res[10];
+-        gamma_code_sort[4] = gamma_code_res[9];
+-        gamma_code_sort[5] = gamma_code_res[8];
+-        gamma_code_sort[6] = gamma_code_res[7];
+-        gamma_code_sort[7] = gamma_code_res[6];
+-        gamma_code_sort[8] = gamma_code_res[5];
+-        gamma_code_sort[9] = gamma_code_res[4];
+-        gamma_code_sort[10] = gamma_code_res[3];
+-        gamma_code_sort[11] = gamma_code_res[2];
+-        gamma_code_sort[12] = gamma_code_res[1];
+-        gamma_code_sort[13] = gamma_code_res[0];
+-        for (i = 0, j = 0xc; i < 14; i++, j += 2)
+-        {
+-            buf_res[j] =  (unsigned char)((gamma_code_sort[i] & 0x300) >> 8);
+-            buf_res[j + 1] =  (unsigned char)(gamma_code_sort[i] & 0xff);
+-        }
+-    }
+-    //cvte add end
+-
+     if (access(PANLE_PGAMMA_FILE_PATH, F_OK) == 0) {
+         if (0 == fileRead(PANLE_PGAMMA_FILE_PATH, 0, (char *)buf_check, 49)) {
+             if (memcmp((char *)buf_check, (char *)buf_res, 49) == 0) {
+diff --git a/amlogic/common/frameworks/services/systemcontrol/PQ/include/CPQControl.h b/amlogic/common/frameworks/services/systemcontrol/PQ/include/CPQControl.h
+index 49ff3f1..ea8c76f 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/PQ/include/CPQControl.h
++++ b/amlogic/common/frameworks/services/systemcontrol/PQ/include/CPQControl.h
+@@ -200,7 +200,7 @@
+ #define PANLE_PGAMMA_LUT_OFFSET_TYPE1                 0xf0e
+ #define PANLE_PGAMMA_LUT_LEN_TYPE1                    0x23
+ 
+-/*Panel:CSOT ST4251B05_2
++/*Panel:CSOT 43
+  *function:acc,od,auto Pgamma
+  *Gamma IC:LP6281
+  */
+@@ -222,42 +222,6 @@
+ #define PANLE_PGAMMA_LUT_OFFSET_TYPE3                 0xf00
+ #define PANLE_PGAMMA_LUT_LEN_TYPE3                    0x31
+ 
+-/*Panel:CSOT ST4251B05_2
+- *function:acc,od,auto Pgamma
+- *Gamma IC:LP6281
+- *Different from Type 2: there is a change in the gamma voltage line sequence
+- */
+-#define EEPROM_I2C_NUM_4                              3
+-#define EEPROM_I2C_ADDRESS_4                          0x50
+-#define EEPRPM_I2C_ADDRESS_LEN_4                      2
+-#define PANLE_TCONLESS_TYPE4                          0x4
+-#define PANLE_PGAMMA_LUT_OFFSET_TYPE4                 0xf00
+-#define PANLE_PGAMMA_LUT_LEN_TYPE4                    0x30
+-
+-/*cvte add start
+- *Panel:HKC PT430CT05-1 
+- *function:acc,od,auto Pgamma
+- *Gamma IC:LP6281
+- */
+-#define EEPROM_I2C_NUM_5                              3
+-#define EEPROM_I2C_ADDRESS_5                          0x50
+-#define EEPRPM_I2C_ADDRESS_LEN_5                      2
+-#define PANLE_TCONLESS_TYPE5                          0x5
+-#define PANLE_PGAMMA_LUT_OFFSET_TYPE5                 0xf0e
+-#define PANLE_PGAMMA_LUT_LEN_TYPE5                    0x23
+-//cvte add end
+-
+-/*Panel:PT500CT02_2
+- *function:acc,od,auto Pgamma
+- *Gamma IC:LP6281
+- */
+-#define EEPROM_I2C_NUM_6                              3
+-#define EEPROM_I2C_ADDRESS_6                          0x50
+-#define EEPRPM_I2C_ADDRESS_LEN_6                      2
+-#define PANLE_TCONLESS_TYPE6                          0x6
+-#define PANLE_PGAMMA_LUT_OFFSET_TYPE6                 0xf0e
+-#define PANLE_PGAMMA_LUT_LEN_TYPE6                    0x23
+-
+ typedef enum db_name_e {
+     DB_NAME_PQ = 0,
+     DB_NAME_OVERSCAN,
+@@ -361,6 +325,11 @@
+     int CheckCridataGammaData(char *data, char *data_remainder, char *str);
+     int DBGammaBlend(unsigned int db_data_gamma[], pq_tcon_gamma_table_t *blend_gamma, unsigned short target_gamma[]);
+     int SetUserGammaValue(int level, vpp_color_temperature_mode_t color_mode);
++    int FactorySetGammaTable(unsigned int *pData, int channel_type, int gamma_type, int len);
++    unsigned int Cpq_CalCriDataGammaChecksum(void);
++    int Cpq_SetCriDataGammaChecksum(void);
++    unsigned int Cpq_GetCriDataGammaChecksum(void);
++    int CleanAllCriDataGammaData(void);
+     //factory
+     int FactorySetRGBCYMF_Reg_Only(int color_type, int color_param, int val);
+     int Cpq_SetRGBCMYF_reg(void);
+@@ -371,9 +340,6 @@
+     int SetColorTemperature(int temp_mode, int is_save, rgb_ogo_type_t rgb_ogo_type = TYPE_INVALID, int value = -1);
+     int GetColorTemperature(void);
+     int SaveColorTemperature(int temp_mode);
+-    //cvte add begin
+-    int SaveColorTemperatureBySource(int source_input,int temp_mode);
+-    //cvte add end
+     tcon_rgb_ogo_t GetColorTemperatureUserParam(void);
+     int Cpq_SetColorTemperatureWithoutSave(vpp_color_temperature_mode_t Tempmode, tv_source_input_t tv_source_input __unused);
+     int Cpq_CheckColorTemperatureParamAlldata(source_input_param_t source_input_param);
+diff --git a/amlogic/common/frameworks/services/systemcontrol/PQ/include/PQType.h b/amlogic/common/frameworks/services/systemcontrol/PQ/include/PQType.h
+index 00e3402..93b06c9 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/PQ/include/PQType.h
++++ b/amlogic/common/frameworks/services/systemcontrol/PQ/include/PQType.h
+@@ -235,6 +235,13 @@
+     VPP_GAMMA_MODE_MAX,
+ } vpp_gamma_mode_t;
+ 
++typedef enum _CHANNEL_TYPE {
++    RED_CH = 0,
++    GREEN_CH,
++    BLUE_CH,
++    MAX_CH,
++} CHANNEL_TYPE;
++
+ //cvte add begin for pattern function
+ typedef enum vpp_gamma_pattern_e {
+     VPP_GAMMA_PATTERN_RED,
+diff --git a/amlogic/common/frameworks/services/systemcontrol/PQ/utils/SSMAction.cpp b/amlogic/common/frameworks/services/systemcontrol/PQ/utils/SSMAction.cpp
+index 9e8e4f4..d516cef 100644
+--- a/amlogic/common/frameworks/services/systemcontrol/PQ/utils/SSMAction.cpp
++++ b/amlogic/common/frameworks/services/systemcontrol/PQ/utils/SSMAction.cpp
+@@ -562,6 +562,43 @@
+     return ret;
+ }
+ 
++//use cri data gamma for TV-159185
++int SSMAction::SSMReadCriDataGamma(int offset, int size, unsigned int data_buf[])
++{
++    int tmp_off = 0, val = 0, max = 0, ret = -1;
++
++    val = offset + size;
++    max = CRI_DATE_GAMMA_LEN + CRI_DATE_GAMMA_CHKSUM_LEN + CRI_DATE_GAMMA_TYPE_INDEXNUM_LEN;
++    if (val > max) {
++        SYS_LOGE("Out of max_size!!!\n");
++        return ret;
++    }
++
++    tmp_off = CRI_DATE_GAMMA_OFFSET + offset;
++
++    ret = ReadDataFromFile(mWhiteBalanceFilePath, tmp_off, size, data_buf);
++
++    return ret;
++}
++
++int SSMAction::SSMSaveCriDataGamma(int offset, int size, unsigned int data_buf[])
++{
++    int tmp_off = 0, val = 0, max = 0, ret = -1;
++
++    val = offset + size;
++    max = CRI_DATE_GAMMA_LEN + CRI_DATE_GAMMA_CHKSUM_LEN + CRI_DATE_GAMMA_TYPE_INDEXNUM_LEN;
++    if (val > max) {
++        SYS_LOGE("Out of max_size!!!\n");
++        return ret;
++    }
++
++    tmp_off = CRI_DATE_GAMMA_OFFSET + offset;
++
++    ret = SaveDataToFile(mWhiteBalanceFilePath, tmp_off, size, data_buf);
++
++    return ret;
++}
++
+ int SSMAction::SSMSaveRGBValueStart(int offset, int8_t rw_val)
+ {
+     int tmp_val = rw_val;
+@@ -671,6 +708,83 @@
+     return 0;
+ }
+ 
++//use cri data gamma for TV-159185
++int SSMAction::ReadDataFromFile(const char *file_name, int offset, int nsize, unsigned int data_buf[])
++{
++    int device_fd = -1;
++
++    if (data_buf == NULL) {
++        SYS_LOGE("data_buf is NULL!!!\n");
++        return -1;
++    }
++
++    if (file_name == NULL) {
++        SYS_LOGE("%s is NULL!\n",file_name);
++        return -1;
++    }
++
++    device_fd = open(file_name, O_RDONLY);
++    if (device_fd < 0) {
++        SYS_LOGE("open file \"%s\" error(%s).\n", file_name, strerror(errno));
++        return -1;
++    }
++
++    if (lseek(device_fd, offset, SEEK_SET) == -1) {
++        SYS_LOGE("%s lseek failed\n", __FUNCTION__);
++        close(device_fd);
++        return -1;
++    }
++
++    if (read(device_fd, data_buf, nsize) == -1) {
++        SYS_LOGE("%s read failed\n", __FUNCTION__);
++        close(device_fd);
++        return -1;
++    }
++
++    close(device_fd);
++    device_fd = -1;
++
++    return 0;
++}
++
++int SSMAction::SaveDataToFile(const char *file_name, int offset, int nsize, unsigned int data_buf[])
++{
++    int device_fd = -1;
++
++    if (data_buf == NULL) {
++        SYS_LOGE("%s, data_buf is NULL!!!\n", __FUNCTION__);
++        return -1;
++    }
++
++    if (file_name == NULL) {
++        SYS_LOGE("%s IS NULL!\n",file_name);
++        return -1;
++    }
++
++    device_fd = open(file_name, O_RDWR | O_SYNC);
++    if (device_fd < 0) {
++        SYS_LOGE("open file \"%s\" error(%s).\n", file_name, strerror(errno));
++        return -1;
++    }
++
++    if (lseek(device_fd, offset, SEEK_SET) == -1) {
++        SYS_LOGE("%s lseek failed\n", __FUNCTION__);
++        close(device_fd);
++        return -1;
++    }
++
++    if (write(device_fd, data_buf, nsize) == -1) {
++        SYS_LOGE("%s write failed\n", __FUNCTION__);
++        close(device_fd);
++        return -1;
++    }
++    fsync(device_fd);
++
++    close(device_fd);
++    device_fd = -1;
++
++    return 0;
++}
+ 
+ //Brightness
+ int SSMAction::SSMSaveBrightness(int offset, int rw_val)
+diff --git a/amlogic/common/frameworks/services/systemcontrol/PQ/utils/SSMHandler.cpp b/amlogic/common/frameworks/services/systemcontrol/PQ/utils/SSMHandler.cpp
+index a1116a2..a1176fc 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/PQ/utils/SSMHandler.cpp
++++ b/amlogic/common/frameworks/services/systemcontrol/PQ/utils/SSMHandler.cpp
+@@ -203,7 +203,7 @@
+     {.id =VPP_DATA_RGB_START, .addr = 0, .size = 18, .valid = 0, .rsv = {0}},
+     {.id =VPP_DATA_COLOR_SPACE_START, .addr = 0, .size = 1, .valid = 0, .rsv = {0}},
+     {.id =VPP_DATA_USER_NATURE_SWITCH_START, .addr = 0, .size = 1, .valid = 0, .rsv = {0}},
+-    {.id =VPP_DATA_GAMMA_VALUE_START, .addr = 0, .size = 1, .valid = 0, .rsv = {0}},
++    {.id =VPP_DATA_GAMMA_VALUE_START, .addr = 0, .size = SSM_SOURCE_MAX, .valid = 0, .rsv = {0}},
+     {.id =VPP_DATA_DBC_BACKLIGHT_START, .addr = 0, .size = 1, .valid = 0, .rsv = {0}},
+     {.id =VPP_DATA_DBC_STANDARD_START, .addr = 0, .size = 1, .valid = 0, .rsv = {0}},
+     {.id =VPP_DATA_DBC_ENABLE_START, .addr = 0, .size = 1, .valid = 0, .rsv = {0}},
+diff --git a/amlogic/common/frameworks/services/systemcontrol/PQ/utils/include/SSMAction.h b/amlogic/common/frameworks/services/systemcontrol/PQ/utils/include/SSMAction.h
+index 77ce486..37b3da6 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/PQ/utils/include/SSMAction.h
++++ b/amlogic/common/frameworks/services/systemcontrol/PQ/utils/include/SSMAction.h
+@@ -26,8 +26,15 @@
+ #define SSM_CR_RGBOGO_CHKSUM_LEN                    (2)
+ #define DEFAULT_BACKLIGHT_BRIGHTNESS                (10)
+ 
+-#define CRI_DATE_GAMMA_OFFSET                       (512)
++//GAMMA_FILE = sizeof(int) * CRI_DATE_GAMMA_CHANNEL_INDEXNUM * CRI_DATE_GAMMA_RGB_SIZE * CRI_DATE_GAMMA_TYPE_INDEXNUM + CRI_DATE_GAMMA_CHKSUM_LEN + CRI_DATE_GAMMA_TYPE_INDEXNUM_LEN
++#define CRI_DATE_GAMMA_OFFSET                       (1100)
++#define CRI_DATE_GAMMA_LEN                          (4 * CRI_DATE_GAMMA_CHANNEL_INDEXNUM * CRI_DATE_GAMMA_RGB_SIZE * CRI_DATE_GAMMA_TYPE_INDEXNUM)
+ #define CRI_DATE_GAMMA_RGB_SIZE                     (257)
++#define CRI_DATE_GAMMA_CHANNEL_INDEXNUM             (3)
++#define CRI_DATE_GAMMA_TYPE_INDEXNUM                (5)
++#define CRI_DATE_GAMMA_TYPE_INDEXNUM_LEN            (4)
++#define CRI_DATE_GAMMA_CHKSUM_LEN                   (4)
++
+ #define CRI_DATE_GAMMA_R_index                      (1)
+ #define CRI_DATE_GAMMA_G_index                      (2)
+ #define CRI_DATE_GAMMA_B_index                      (3)
+@@ -87,12 +94,16 @@
+     int SSMReadRGBPostOffsetBStart(int offset, int *rw_val);
+     int SSMReadRGBOGOValue(int offset, int size, unsigned char data_buf[]);
+     int SSMSaveRGBOGOValue(int offset, int size, unsigned char data_buf[]);
++    int SSMReadCriDataGamma(int offset, int size, unsigned int data_buf[]);
++    int SSMSaveCriDataGamma(int offset, int size, unsigned int data_buf[]);
+     int SSMSaveRGBValueStart(int offset, int8_t rw_val);
+     int SSMReadRGBValueStart(int offset, int8_t *rw_val);
+     int SSMSaveColorSpaceStart(unsigned char rw_val);
+     int SSMReadColorSpaceStart(unsigned char *rw_val);
+     int ReadDataFromFile(const char *file_name, int offset, int nsize, unsigned char data_buf[]);
+     int SaveDataToFile(const char *file_name, int offset, int nsize, unsigned char data_buf[]);
++    int ReadDataFromFile(const char *file_name, int offset, int nsize, unsigned int data_buf[]);
++    int SaveDataToFile(const char *file_name, int offset, int nsize, unsigned int data_buf[]);
+     //Brightness
+     int SSMSaveBrightness(int offset, int rw_val);
+     int SSMReadBrightness(int offset, int *rw_val);
+diff --git a/amlogic/common/frameworks/services/systemcontrol/SystemControlClient.cpp b/amlogic/common/frameworks/services/systemcontrol/SystemControlClient.cpp
+index bca7a0e..af3b85e 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/SystemControlClient.cpp
++++ b/amlogic/common/frameworks/services/systemcontrol/SystemControlClient.cpp
+@@ -725,12 +725,6 @@
+     return mSysCtrl->saveColorTemperature(mode);
+ }
+ 
+-//cvte add begin
+-int SystemControlClient::saveColorTemperatureBySource(int source_input,int temp_mode) {
+-    return mSysCtrl->saveColorTemperatureBySource(source_input,temp_mode);
+-}
+-//cvte add end
+-
+ int SystemControlClient::setColorTemperatureUserParam(int mode, int isSave, int param_type, int value) {
+     return mSysCtrl->setColorTemperatureUserParam(mode, isSave, param_type, value);
+ }
+@@ -858,6 +852,28 @@
+     return mSysCtrl->getGammaValue();
+ }
+ 
++int SystemControlClient::factorySetGammaTable(unsigned int *value, int channel_type, int gamma_type, int PointNum)
++{
++    int i;
++    hidl_array<int32_t, 4096> result;
++    for (i = 0; i < PointNum; ++i) {
++        result[i] = value[i];
++    }
++    for (; i < 4096; ++i) {
++        result[i] = 0;
++    }
++
++    if (mSysCtrl->factorySetGammaTable(result, channel_type, gamma_type, PointNum) == Result::OK) {
++        return true;
++    }
++
++    return false;
++}
++
++int SystemControlClient::cleanAllGammaData(void) {
++    return mSysCtrl->cleanAllGammaData();
++}
++
+ bool SystemControlClient::hasMemcFunc() {
+     return (mSysCtrl->hasMemcFunc() == Result::OK);
+ }
+diff --git a/amlogic/common/frameworks/services/systemcontrol/SystemControlClient.h b/amlogic/common/frameworks/services/systemcontrol/SystemControlClient.h
+index f63493f..439a596 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/SystemControlClient.h
++++ b/amlogic/common/frameworks/services/systemcontrol/SystemControlClient.h
+@@ -158,9 +158,6 @@
+     int setColorTemperature(int mode, int isSave);
+     int getColorTemperature(void);
+     int saveColorTemperature(int mode);
+-    //cvte add begin
+-    int saveColorTemperatureBySource(int source_input,int temp_mode);
+-    //cvte add end
+     int setColorTemperatureUserParam(int mode, int isSave, int param_type, int value);
+     tcon_rgb_ogo_t getColorTemperatureUserParam(void);
+     int setBrightness(int value, int isSave);
+@@ -190,6 +187,8 @@
+     int getEyeProtectionMode(int source_input);
+     int setGammaValue(int gamma_curve, int isSave);
+     int getGammaValue(void);
++    int factorySetGammaTable(unsigned int *value, int channel_type, int gamma_type, int PointNum);
++    int cleanAllGammaData(void);
+     bool hasMemcFunc();
+     int setMemcMode(int memc_mode, int isSave);
+     int getMemcMode(void);
+diff --git a/amlogic/common/frameworks/services/systemcontrol/SystemControlHal.cpp b/amlogic/common/frameworks/services/systemcontrol/SystemControlHal.cpp
+index a42a834..a922237 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/SystemControlHal.cpp
++++ b/amlogic/common/frameworks/services/systemcontrol/SystemControlHal.cpp
+@@ -1000,11 +1000,6 @@
+ Return<int32_t> SystemControlHal::saveColorTemperature(int32_t mode) {
+     return mSysControl->saveColorTemperature(mode);
+ }
+-//cvte add begin
+-Return<int32_t> SystemControlHal::saveColorTemperatureBySource(int32_t source_input,int32_t mode) {
+-    return mSysControl->saveColorTemperatureBySource(source_input,mode);
+-}
+-//cvte add end
+ 
+ Return<int32_t> SystemControlHal::setColorTemperatureUserParam(int32_t mode, int32_t isSave,
+                               int32_t param_type, int32_t value) {
+@@ -1139,6 +1134,31 @@
+     return mSysControl->getGammaValue();
+ }
+ 
++Return<Result> SystemControlHal::factorySetGammaTable(const hidl_array<int32_t, 4096>& pData, int32_t channel_type, int32_t gamma_type, int32_t size)
++{
++    SYS_LOGD("%s", __FUNCTION__);
++
++    unsigned int *value = (unsigned int *)malloc(size * sizeof(unsigned int));
++    memset(value, 0, size * sizeof(unsigned int));
++
++    for (int i = 0; i < size; ++i) {
++        value[i] = pData[i];
++    }
++
++    bool result = mSysControl->factorySetGammaTable(value, channel_type, gamma_type, size);
++    free(value);
++
++    if (result) {
++        return Result::OK;
++    }
++
++    return Result::FAIL;
++}
++
++Return<int32_t> SystemControlHal::cleanAllGammaData(void) {
++    return mSysControl->cleanAllGammaData();
++}
++
+ Return<int32_t> SystemControlHal::getGammaPowerValue(void) {
+     return mSysControl->getGammaPowerValue();
+ }
+diff --git a/amlogic/common/frameworks/services/systemcontrol/SystemControlHal.h b/amlogic/common/frameworks/services/systemcontrol/SystemControlHal.h
+index c90f5f1..71fce00 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/SystemControlHal.h
++++ b/amlogic/common/frameworks/services/systemcontrol/SystemControlHal.h
+@@ -163,9 +163,6 @@
+     Return<int32_t> setColorTemperature(int32_t mode, int32_t isSave) override;
+     Return<int32_t> getColorTemperature(void) override;
+     Return<int32_t> saveColorTemperature(int32_t mode) override;
+-    //cvte add begin
+-    Return<int32_t> saveColorTemperatureBySource(int32_t source_input,int32_t mode) override;
+-    //cvte add end
+     Return<int32_t> setColorTemperatureUserParam(int32_t mode, int32_t isSave, int32_t param_type, int32_t value) override;
+     Return<void> getColorTemperatureUserParam(getColorTemperatureUserParam_cb _hidl_cb) override;
+     Return<int32_t> setBrightness(int32_t value, int32_t isSave) override;
+@@ -195,6 +192,8 @@
+     Return<int32_t> getEyeProtectionMode(int32_t inputSrc) override;
+     Return<int32_t> setGammaValue(int32_t gamma_curve, int32_t isSave) override;
+     Return<int32_t> getGammaValue(void) override;
++    Return<Result> factorySetGammaTable(const hidl_array<int32_t, 4096>& pData, int32_t channel_type, int32_t gamma_type, int32_t size) override;
++    Return<int32_t> cleanAllGammaData(void);
+     Return<int32_t> getGammaPowerValue(void);
+     Return<int32_t> setGammaPowerValue(int32_t value, int32_t is_save);
+     Return<Result> hasMemcFunc() override;
+diff --git a/amlogic/common/frameworks/services/systemcontrol/SystemControlService.cpp b/amlogic/common/frameworks/services/systemcontrol/SystemControlService.cpp
+index da51b39..2b67ecf 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/SystemControlService.cpp
++++ b/amlogic/common/frameworks/services/systemcontrol/SystemControlService.cpp
+@@ -1140,17 +1140,6 @@
+     }
+ }
+ 
+-//cvte add begin
+-int SystemControlService::saveColorTemperatureBySource(int source_input,int temp_mode)
+-{
+-    if (pCPQControl != NULL) {
+-        return pCPQControl->SaveColorTemperatureBySource(source_input,temp_mode);
+-    } else {
+-        return -1;
+-    }
+-}
+-//cvte add end
+-
+ int SystemControlService::setColorTemperatureUserParam(int mode, int isSave, int param_type, int value)
+ {
+     if (pCPQControl != NULL) {
+@@ -1415,6 +1404,27 @@
+     }
+ }
+ 
++bool SystemControlService::factorySetGammaTable(unsigned int *pData, int channel_type, int gamma_type, int len)
++{
++    if (pCPQControl != NULL) {
++        if (pCPQControl->FactorySetGammaTable(pData, channel_type, gamma_type, len) < 0) {
++            return false;
++        }
++        return true;
++    }
++
++    return false;
++}
++
++int SystemControlService::cleanAllGammaData(void)
++{
++    if (pCPQControl != NULL) {
++        return pCPQControl->CleanAllCriDataGammaData();
++    } else {
++        return -1;
++    }
++}
++
+ int SystemControlService::setGammaPowerValue(int value, int is_save)
+ {
+     if (pCPQControl != NULL) {
+diff --git a/amlogic/common/frameworks/services/systemcontrol/SystemControlService.h b/amlogic/common/frameworks/services/systemcontrol/SystemControlService.h
+index 2aba9a0..a2c660e 100755
+--- a/amlogic/common/frameworks/services/systemcontrol/SystemControlService.h
++++ b/amlogic/common/frameworks/services/systemcontrol/SystemControlService.h
+@@ -166,9 +166,6 @@
+     int setColorTemperature(int mode, int isSave);
+     int getColorTemperature(void);
+     int saveColorTemperature(int mode);
+-    //cvte add begin
+-    int saveColorTemperatureBySource(int source_input,int mode);
+-    //cvte add end
+     int setColorTemperatureUserParam(int mode, int isSave, int param_type, int value);
+     tcon_rgb_ogo_t getColorTemperatureUserParam(void);
+     int setBrightness(int value, int isSave);
+@@ -198,6 +195,8 @@
+     int getEyeProtectionMode(int source_input);
+     int setGammaValue(int gamma_curve, int isSave);
+     int getGammaValue(void);
++    bool factorySetGammaTable(unsigned int *pData, int channel_type, int gamma_type, int len);
++    int cleanAllGammaData(void);
+     int getGammaPowerValue(void);
+     int setGammaPowerValue(int value, int is_save);
+     bool hasMemcFunc(void);
+diff --git a/amlogic/common/interfaces/current.txt b/amlogic/common/interfaces/current.txt
+index 5291514..86b86fe 100755
+--- a/amlogic/common/interfaces/current.txt
++++ b/amlogic/common/interfaces/current.txt
+@@ -66,4 +66,5 @@
+ 5c62cf94005a2c204eb57fb3d9bd10e78a8716208715f7e1e2f067346404f359 vendor.amlogic.hardware.systemcontrol@1.0::types
+ dd85e85bfd359f8f884e54c33a0fe34170852d033128a0be360dcef7154f4bca vendor.amlogic.hardware.systemcontrol@1.0::ISystemControl
+ 3dfa0048202540f0f6ceffeee16087013747b599b07e2a5681a3f9adea92e60d vendor.amlogic.hardware.systemcontrol@1.0::ISystemControlCallback
+-e16e0eaadcf17b5308c773363f7eb84801604c544adc9b5b92550924963b37aa vendor.amlogic.hardware.systemcontrol@1.0::ISystemControl
++d9da43316b3659072cb9dd706dc988a343c11bf4ca5406095cc0650126a2c0b6 vendor.amlogic.hardware.systemcontrol@1.0::ISystemControl
++
+diff --git a/amlogic/common/interfaces/systemcontrol/1.0/ISystemControl.hal b/amlogic/common/interfaces/systemcontrol/1.0/ISystemControl.hal
+index c83ea88..8f6f7b0 100755
+--- a/amlogic/common/interfaces/systemcontrol/1.0/ISystemControl.hal
++++ b/amlogic/common/interfaces/systemcontrol/1.0/ISystemControl.hal
+@@ -325,11 +325,6 @@
+   saveColorTemperature(int32_t mode)
+       generates (int32_t ret);
+ 
+-  //cvte add begin
+-  saveColorTemperatureBySource(int32_t source_input,int32_t mode)
+-      generates (int32_t ret);
+-  //cvte add end
+-
+   setColorTemperatureUserParam(int32_t mode, int32_t is_save, int32_t type, int32_t value)
+       generates (int32_t ret);
+ 
+@@ -423,6 +418,12 @@
+   getGammaValue()
+       generates (int32_t ret);
+ 
++  factorySetGammaTable(int32_t[4096] pData, int32_t channel_type, int32_t gamma_type, int32_t size)
++      generates (Result result);
++
++  cleanAllGammaData()
++      generates (int32_t ret);
++
+   setGammaPowerValue(int32_t value,int32_t isSave)
+       generates (int32_t ret);
+ 
+diff --git a/cvte_at/atcfg/include/idx_enum_define.h b/cvte_at/atcfg/include/idx_enum_define.h
+index 92b0068..26efd93 100755
+--- a/cvte_at/atcfg/include/idx_enum_define.h
++++ b/cvte_at/atcfg/include/idx_enum_define.h
+@@ -34,6 +34,7 @@
+ #define  MIRACAST_KEY_CKD_Space  1066
+ #define  CI_PLUS_KEY_CKD_Space   6000
+ #define  WIDEVINE_KEY_CKD_Space  292
++#define GAMMA_TABLE_Space 10000
+ 
+ #elif (CVT_DEF_PLATFORM_TYPE == ID_PLATFORM_T972)
+ 
+@@ -108,6 +109,8 @@
+     IDX_DEVICEID_ID,
+     IDX_DEVICEID_KEY,
+     IDX_FAC_BURN_INFO_FLAG,
++    IDX_TCL_GAMMA_MD5,
++    IDX_TCL_GAMMA_VAL,
+ 
+ /*-------------THE FOLLOWING IS FOR OFFLINE BURN KEY, PLEASE ADD NEW KEY BEFORE THIS LINE------------*/
+     //Start of CKD burn key
+diff --git a/cvte_at/atcfg/src/idx_enum_define.c b/cvte_at/atcfg/src/idx_enum_define.c
+index 1cd9e41..79736f0 100755
+--- a/cvte_at/atcfg/src/idx_enum_define.c
++++ b/cvte_at/atcfg/src/idx_enum_define.c
+@@ -48,19 +48,19 @@
+     DECLARE_FIELD(IDX_AT_TEMP      ,        CFG_CHAR_8BIT,                20,  NULL,  ACCESS_USER,       false,     0);
+     DECLARE_FIELD(IDX_AT_TEST_STATE,        CFG_CHAR_8BIT,                 1,  NULL,  ACCESS_FOREVER,    false,     0);
+ 
+-    DECLARE_FIELD(IDX_WB_ATV,               CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_DTV,               CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_CVBS,              CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_YPBPR,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_HDMI1,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_HDMI2,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_HDMI3,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_HDMI4,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_DVI,               CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_VGA,               CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_MMP,               CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_MMP_IMG,           CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
+-    DECLARE_FIELD(IDX_WB_OTHER,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,     false,     0);
++    DECLARE_FIELD(IDX_WB_ATV,               CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_DTV,               CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_CVBS,              CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_YPBPR,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_HDMI1,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_HDMI2,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_HDMI3,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_HDMI4,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_DVI,               CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_VGA,               CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_MMP,               CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_MMP_IMG,           CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_WB_OTHER,             CFG_INT_32BIT,      WB_BUF_Space,  NULL,  ACCESS_FOREVER,    false,     0);
+ 
+     DECLARE_FIELD(IDX_ADC_VGA,              CFG_INT_32BIT,                30,  NULL,  ACCESS_FOREVER,     true,     0);//MS_COLOR_TEMP_NUM * 6
+     DECLARE_FIELD(IDX_ADC_YPBPR,            CFG_INT_32BIT,                30,  NULL,  ACCESS_FOREVER,     true,     0);//MS_COLOR_TEMP_NUM * 6
+@@ -80,6 +80,8 @@
+     DECLARE_FIELD(IDX_DEVICEID_KEY,         CFG_CHAR_8BIT,   DEVICE_ID_Space,  NULL,  ACCESS_FOREVER,    false,     0);
+ 
+     DECLARE_FIELD(IDX_FAC_BURN_INFO_FLAG,   CFG_INT_32BIT,                 1,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_TCL_GAMMA_MD5,        CFG_CHAR_8BIT,      KEY_NAME_Space,  NULL,  ACCESS_FOREVER,    false,     0);
++    DECLARE_FIELD(IDX_TCL_GAMMA_VAL,        CFG_CHAR_8BIT,   GAMMA_TABLE_Space,  NULL,  ACCESS_FOREVER,    false,     0);
+ 
+ /* -------------THE FOLLOWING IS FOR OFFLINE BURN KEY, PLEASE ADD NEW KEY BEFORE THIS LINE------------*/
+     DECLARE_FIELD(IDX_ETH_MAC_CKD,          CFG_CHAR_8BIT,              11,    NULL,  ACCESS_FOREVER,    false,     0);
+diff --git a/cvte_at/java_lib/AtCfgControl.java b/cvte_at/java_lib/AtCfgControl.java
+index d7765d9..d14bdd3 100755
+--- a/cvte_at/java_lib/AtCfgControl.java
++++ b/cvte_at/java_lib/AtCfgControl.java
+@@ -57,6 +57,8 @@
+     public final static String IDX_DEVICEID_ID = "IDX_DEVICEID_ID";
+     public final static String IDX_DEVICEID_KEY = "IDX_DEVICEID_KEY";
+     public final static String IDX_FAC_BURN_INFO_FLAG = "IDX_FAC_BURN_INFO_FLAG";
++    public static final String IDX_TCL_GAMMA_MD5 = "IDX_TCL_GAMMA_MD5";
++    public static final String IDX_TCL_GAMMA_VAL = "IDX_TCL_GAMMA_VAL";
+ 
+ 
+ 
